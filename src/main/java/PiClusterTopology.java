@@ -1,12 +1,16 @@
 import StormOnEdge.grouping.stream.ZoneShuffleGrouping;
 import backtype.storm.Config;
 import backtype.storm.StormSubmitter;
-import backtype.storm.generated.KillOptions;
-import backtype.storm.generated.Nimbus;
+import backtype.storm.generated.*;
+import backtype.storm.spout.Scheme;
 import backtype.storm.topology.TopologyBuilder;
-import backtype.storm.tuple.Fields;
 import backtype.storm.utils.NimbusClient;
 import backtype.storm.utils.Utils;
+import io.latent.storm.rabbitmq.Declarator;
+import io.latent.storm.rabbitmq.UnanchoredRabbitMQSpout;
+import io.latent.storm.rabbitmq.config.ConnectionConfig;
+import io.latent.storm.rabbitmq.config.ConsumerConfig;
+import io.latent.storm.rabbitmq.config.ConsumerConfigBuilder;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.kohsuke.args4j.CmdLineException;
@@ -27,24 +31,13 @@ public class PiClusterTopology {
   @Option(name="--debug", aliases={"-d"}, usage="enable debug")
   private boolean _debug = false;
 
-  @Option(name="--local", usage="run in local mode")
-  private boolean _local = false;
-
-  @Option(name="--messageSizeByte", aliases={"--messageSize"}, metaVar="SIZE",
-          usage="size of the messages generated in bytes")
-  private int _messageSize = 100;
-
   @Option(name="--numTopologies", aliases={"-n"}, metaVar="TOPOLOGIES",
           usage="number of topologies to run in parallel")
   private int _numTopologies = 1;
 
-  @Option(name="--ClusterGroup", aliases={"--clusterGroup"}, metaVar="CLUSTERGROUP",
-          usage="Number of cluster")
-  private int _clusterGroup = 4;
-
   @Option(name="--localTaskGroup", aliases={"--localGroup"}, metaVar="LOCALGROUP",
           usage="number of initial local TaskGroup")
-  private int _localGroup = 9;
+  private int _localGroup = 2;
 
   @Option(name="--spoutParallel", aliases={"--spout"}, metaVar="SPOUT",
           usage="number of spouts to run local TaskGroup")
@@ -64,7 +57,7 @@ public class PiClusterTopology {
 
   @Option(name="--ackers", metaVar="ACKERS",
           usage="number of acker bolts to launch per topology")
-  private int _ackers = 1;
+  private int _ackers = 0;
 
   @Option(name="--maxSpoutPending", aliases={"--maxPending"}, metaVar="PENDING",
           usage="maximum number of pending messages per spout (only valid if acking is enabled)")
@@ -73,9 +66,6 @@ public class PiClusterTopology {
   @Option(name="--name", aliases={"--topologyName"}, metaVar="NAME",
           usage="base name of the topology (numbers may be appended to the end)")
   private String _name = "test";
-
-  @Option(name="--ackEnabled", aliases={"--ack"}, usage="enable acking")
-  private boolean _ackEnabled = false;
 
   @Option(name="--pollFreqSec", aliases={"--pollFreq"}, metaVar="POLL",
           usage="How often should metrics be collected")
@@ -89,8 +79,122 @@ public class PiClusterTopology {
           usage="Sample rate for metrics (0-1).")
   private double _sampleRate = 0.3;
 
+  private static class MetricsState {
+    long transferred = 0;
+    int slotsUsed = 0;
+    long lastTime = 0;
+  }
+
+  private boolean printOnce = true;
+
+  public void metrics(Nimbus.Client client, int poll, int total) throws Exception {
+    System.out.println("status\ttopologies\ttotalSlots\tslotsUsed\ttotalExecutors\texecutorsWithMetrics\ttime\ttime-diff ms\ttransferred\tthroughput (MB/s)");
+    MetricsState state = new MetricsState();
+    long pollMs = poll * 1000;
+    long now = System.currentTimeMillis();
+    state.lastTime = now;
+    long startTime = now;
+    long cycle = 0;
+    long sleepTime;
+    long wakeupTime;
+    while (metrics(client, now, state, "WAITING")) {
+      now = System.currentTimeMillis();
+      cycle = (now - startTime)/pollMs;
+      wakeupTime = startTime + (pollMs * (cycle + 1));
+      sleepTime = wakeupTime - now;
+      if (sleepTime > 0) {
+        Thread.sleep(sleepTime);
+      }
+      now = System.currentTimeMillis();
+    }
+
+    now = System.currentTimeMillis();
+    cycle = (now - startTime)/pollMs;
+    wakeupTime = startTime + (pollMs * (cycle + 1));
+    sleepTime = wakeupTime - now;
+    if (sleepTime > 0) {
+      Thread.sleep(sleepTime);
+    }
+    now = System.currentTimeMillis();
+    long end = now + (total * 1000);
+    do {
+
+//      /// one time print addition
+//      if(printOnce)
+//      {
+//        printExecutorLocation(client);
+//      }
+//      printOnce = false;
+//      ///
+
+      metrics(client, now, state, "RUNNING");
+
+      now = System.currentTimeMillis();
+      cycle = (now - startTime)/pollMs;
+      wakeupTime = startTime + (pollMs * (cycle + 1));
+      sleepTime = wakeupTime - now;
+      if (sleepTime > 0) {
+        Thread.sleep(sleepTime);
+      }
+      now = System.currentTimeMillis();
+    } while (now < end);
+  }
+
+  public boolean metrics(Nimbus.Client client, long now, MetricsState state, String message) throws Exception {
+    ClusterSummary summary = client.getClusterInfo();
+    long time = now - state.lastTime;
+    state.lastTime = now;
+    int numSupervisors = summary.get_supervisors_size();
+    int totalSlots = 0;
+    int totalUsedSlots = 0;
+
+    //////////
+    //String namaSupervisor = "";
+    for (SupervisorSummary sup: summary.get_supervisors()) {
+      totalSlots += sup.get_num_workers();
+      totalUsedSlots += sup.get_num_used_workers();
+      //namaSupervisor = namaSupervisor + sup.get_host() + ",";
+    }
+    //System.out.println(namaSupervisor);
+
+    int slotsUsedDiff = totalUsedSlots - state.slotsUsed;
+    state.slotsUsed = totalUsedSlots;
+
+    int numTopologies = summary.get_topologies_size();
+    long totalTransferred = 0;
+    int totalExecutors = 0;
+    int executorsWithMetrics = 0;
+    for (TopologySummary ts: summary.get_topologies()) {
+      String id = ts.get_id();
+      TopologyInfo info = client.getTopologyInfo(id);
+
+      for (ExecutorSummary es: info.get_executors()) {
+        ExecutorStats stats = es.get_stats();
+        totalExecutors++;
+        if (stats != null) {
+          Map<String,Map<String,Long>> transferred = stats.get_emitted();/* .get_transferred();*/
+          if ( transferred != null) {
+            Map<String, Long> e2 = transferred.get(":all-time");
+            if (e2 != null) {
+              executorsWithMetrics++;
+              //The SOL messages are always on the default stream, so just count those
+              Long dflt = e2.get("default");
+              if (dflt != null) {
+                totalTransferred += dflt;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    state.transferred = totalTransferred;
+    System.out.println(message+","+totalSlots+","+totalUsedSlots+","+totalExecutors+","+executorsWithMetrics+","+time+",NOLIMIT");
+    return !(totalUsedSlots > 0 && slotsUsedDiff == 0 && totalExecutors > 0 && executorsWithMetrics >= totalExecutors);
+  }
 
   public void realMain(String[] args) throws Exception {
+
     Map clusterConf = Utils.readStormConfig();
     clusterConf.putAll(Utils.readCommandLineOpts());
     Nimbus.Client client = NimbusClient.getConfiguredClient(clusterConf).getClient();
@@ -118,9 +222,6 @@ public class PiClusterTopology {
     if (_name == null || _name.isEmpty()) {
       throw new IllegalArgumentException("name must be something");
     }
-    if (!_ackEnabled) {
-      _ackers = 0;
-    }
 
     try {
       for (int topoNum = 0; topoNum < _numTopologies; topoNum++) {
@@ -131,29 +232,48 @@ public class PiClusterTopology {
         int totalGlobalBolt = _boltGlobalParallel;
         int totalGlobalResultBolt = 1;
 
+        //configuration for rabbitMQ
+        Declarator declarator = new SOERabbitDeclarator("", "accel", "accel");
+        Scheme scheme = new SOERabbitMQScheme();
+        ConnectionConfig connectionConfig = new ConnectionConfig("localhost", "guest", "guest");
+        ConsumerConfig spoutConfig = new ConsumerConfigBuilder().connection(connectionConfig)
+                .queue("accel")
+                .prefetch(200)
+                .build();
+
         TopologyBuilder builder = new TopologyBuilder();
 
-        builder.setSpout("messageSpoutLocal1", new SOESpout(_messageSize, _ackEnabled), totalSpout).addConfiguration("group-name", "Local1");
-//        builder.setBolt("messageBoltLocal1_1", new SOEBolt(), totalLocalBolt).shuffleGrouping("messageSpoutLocal1").addConfiguration("group-name", "Local1");
-//        builder.setBolt("messageBoltLocal1_LocalResult", new SOEFinalBolt(), totalLocalResultBolt).shuffleGrouping("messageBoltLocal1_1").addConfiguration("group-name", "Local1");
-        builder.setBolt("messageBoltLocal1_1", new SOEBolt(), totalLocalBolt).customGrouping("messageSpoutLocal1", new ZoneShuffleGrouping()).addConfiguration("group-name", "Local1");
-        builder.setBolt("messageBoltLocal1_LocalResult", new SOEFinalBolt(), totalLocalResultBolt).customGrouping("messageBoltLocal1_1", new ZoneShuffleGrouping()).addConfiguration("group-name", "Local1");
+        //Local1 TaskGroup
+        builder.setSpout("RabbitMQSpoutLocal", new UnanchoredRabbitMQSpout(scheme, declarator), totalSpout)
+                .addConfigurations(spoutConfig.asMap())
+                .addConfiguration("group-name", "Local1")
+                .setMaxSpoutPending(200);
 
-//        builder.setSpout("messageSpoutLocal2", new SOESpout(_messageSize, _ackEnabled), totalSpout).addConfiguration("group-name", "Local2");
-//        builder.setBolt("messageBoltLocal2_1", new SOEBolt(), totalLocalBolt).shuffleGrouping("messageSpoutLocal2").addConfiguration("group-name", "Local2");
-//        builder.setBolt("messageBoltLocal2_LocalResult", new SOEFinalBolt(), totalLocalResultBolt).shuffleGrouping("messageBoltLocal2_1").addConfiguration("group-name", "Local2");
-//        builder.setBolt("messageBoltLocal2_1", new SOEBolt(), totalLocalBolt).customGrouping("messageSpoutLocal2", new ZoneShuffleGrouping()).addConfiguration("group-name", "Local2");
-//        builder.setBolt("messageBoltLocal2_LocalResult", new SOEFinalBolt(), totalLocalResultBolt).customGrouping("messageBoltLocal2_1", new ZoneShuffleGrouping()).addConfiguration("group-name", "Local2");
+        builder.setBolt("TupleSeparator", new SOETupleSeparatorBolt(), totalLocalBolt)
+                .customGrouping("RabbitMQSpoutLocal", new ZoneShuffleGrouping())
+                .addConfiguration("group-name", "Local1");
 
-        builder.setBolt("messageBoltGlobal1_1A", new SOEBolt(), totalGlobalBolt).shuffleGrouping("messageBoltLocal1_1").addConfiguration("group-name", "Global1");
-//        builder.setBolt("messageBoltGlobal1_1B", new SOEBolt(), totalGlobalBolt).shuffleGrouping("messageBoltLocal2_1").addConfiguration("group-name", "Global1");
-        builder.setBolt("messageBoltGlobal1_FG", new SOEBolt(), 2)
-                .fieldsGrouping("messageBoltGlobal1_1A", new Fields("fieldValue"))
-//          .fieldsGrouping("messageBoltGlobal1_1B", new Fields("fieldValue"))
+        builder.setBolt("CheckVibration_local", new SOECheckVibrationBolt(), totalLocalBolt)
+                .customGrouping("TupleSeparator", new ZoneShuffleGrouping())
+                .addConfiguration("group-name", "Local1");
+//
+        builder.setBolt("messageBoltLocal_LocalResult", new SOEFinalAlertBolt(), totalLocalResultBolt)
+                .customGrouping("CheckVibration_local", new ZoneShuffleGrouping())
+                //.shuffleGrouping("CheckVibration_global")
+                .addConfiguration("group-name", "Local1");
+
+        //Global1 TaskGroup
+        builder.setBolt("CheckVibration_global", new SOECheckVibrationBolt(), totalGlobalBolt)
+                .shuffleGrouping("TupleSeparator")
                 .addConfiguration("group-name", "Global1");
-        builder.setBolt("messageBoltGlobal1_GlobalResult", new SOEFinalBolt(), totalGlobalResultBolt)
-                .shuffleGrouping("messageBoltGlobal1_FG")
-                .addConfiguration("group-name", "Global1");
+
+//        builder.setBolt("messageBoltGlobal1_FG", new SOECheckVibrationBolt(), totalGlobalBolt)
+//                .fieldsGrouping("messageBoltGlobal1_1A", new Fields("fieldValue"))
+//                .addConfiguration("group-name", "Global1");
+//
+//        builder.setBolt("messageBoltGlobal1_GlobalResult", new SOEFinalAlertBolt(), totalGlobalResultBolt)
+//                .shuffleGrouping("messageBoltGlobal1_FG")
+//                .addConfiguration("group-name", "Global1");
 
         Config conf = new Config();
         conf.setDebug(_debug);
@@ -166,7 +286,9 @@ public class PiClusterTopology {
 
         StormSubmitter.submitTopology(_name+"_"+topoNum, conf, builder.createTopology());
       }
-      //metrics(client, _messageSize, _pollFreqSec, _testRunTimeSec);
+      metrics(client,  _pollFreqSec, _testRunTimeSec);
+      //Thread.sleep(_testRunTimeSec * 1000);
+
     } finally {
       //Kill it right now!!!
       KillOptions killOpts = new KillOptions();

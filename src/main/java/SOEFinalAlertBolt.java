@@ -20,19 +20,25 @@ import backtype.storm.topology.OutputFieldsDeclarer;
 import backtype.storm.topology.base.BaseRichBolt;
 import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Tuple;
-import backtype.storm.tuple.Values;
+import org.joda.time.DateTime;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.util.Map;
 
-public class SOEFinalBolt extends BaseRichBolt {
+public class SOEFinalAlertBolt extends BaseRichBolt {
 	/**
 	 * 
 	 */
 	private static final long serialVersionUID = -7418734359875255034L;
-	
-private OutputCollector _collector;
+  private static final Logger LOG = LoggerFactory.getLogger(SOEFinalAlertBolt.class);
+  private OutputCollector _collector;
 
-  public SOEFinalBolt() {
+  private final String PythonLOCATION = "/home/pi/SOE/stormData";
+  private final String PythonNAME = "alert.py";
+
+  public SOEFinalAlertBolt() {
     //Empty
   }
 
@@ -40,13 +46,36 @@ private OutputCollector _collector;
   public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
     _collector = collector;
 
-    context.addTaskHook(new HookFinalBolt());
+//    context.addTaskHook(new HookFinalBolt());
+
+//    File file = new File("");
+//    LOG.info("!!~~~~~~~~~~~~~~!!");
+//    LOG.info(file.getAbsolutePath());
+//    LOG.info("!!~~~~~~~~~~~~~~!!");
   }
 
   
   public void execute(Tuple tuple) {
-	//if(rand.nextInt(10) < 6)  
-	  _collector.emit(tuple, new Values(tuple.getString(0), tuple.getString(1), tuple.getLong(2)));
+	  //if(rand.nextInt(10) < 6)
+	  //_collector.emit(tuple, new Values(tuple.getString(0), tuple.getString(1), tuple.getLong(2)));
+
+    String message = tuple.getStringByField("message");
+    String nodeName = tuple.getStringByField("fieldValue");
+    long timeStamp = tuple.getLongByField("timeStamp");
+
+    LOG.info("!!Something Happened in " + nodeName);
+    LOG.info("!!At : " + new DateTime(timeStamp).toString());
+    LOG.info("!!Current Time : " + DateTime.now());
+
+    try {
+      ProcessBuilder builder = new ProcessBuilder("python", PythonNAME);
+      builder.directory(new File(PythonLOCATION));
+
+      Process process = builder.start();
+      Thread.sleep(500); //let the app run
+      process.destroy();
+
+    }catch (Exception e) {e.printStackTrace();}
 
 	  _collector.ack(tuple);
   }

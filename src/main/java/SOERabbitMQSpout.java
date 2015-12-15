@@ -21,17 +21,22 @@ import backtype.storm.topology.base.BaseRichSpout;
 import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Values;
 
+import com.rabbitmq.client.ConnectionFactory;
+import com.rabbitmq.client.Connection;
+import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.Consumer;
+import com.rabbitmq.client.DefaultConsumer;
+
 import java.util.Map;
 import java.util.Random;
 
-public class SOESpout extends BaseRichSpout {
+public class SOERabbitMQSpout extends BaseRichSpout {
 	
 /**
 	 * 
 	 */
 	private static final long serialVersionUID = 4137062886055644678L;
-	
-  private int _sizeInBytes;
+
   private long _messageCount;
   private SpoutOutputCollector _collector;
   private String [] _messages = null;
@@ -40,11 +45,7 @@ public class SOESpout extends BaseRichSpout {
   private String nodeName;
   private long timeStamp;
   
-  public SOESpout(int sizeInBytes, boolean ackEnabled) {
-    if(sizeInBytes < 0) {
-      sizeInBytes = 0;
-    }
-    _sizeInBytes = sizeInBytes;
+  public SOERabbitMQSpout(boolean ackEnabled) {
     _messageCount = 0;
     _ackEnabled = ackEnabled;
   }
@@ -56,17 +57,7 @@ public class SOESpout extends BaseRichSpout {
   public void open(Map conf, TopologyContext context, SpoutOutputCollector collector) {
     _rand = new Random();
     _collector = collector;
-    final int differentMessages = 100;
-    _messages = new String[differentMessages];
-    for(int i = 0; i < differentMessages; i++) {
-      StringBuilder sb = new StringBuilder(_sizeInBytes);
-      //Even though java encodes strings in UCS2, the serialized version sent by the tuples
-      // is UTF8, so it should be a single byte
-      for(int j = 0; j < _sizeInBytes; j++) {
-        sb.append(_rand.nextInt(9));
-      }
-      _messages[i] = sb.toString();
-    }
+
     nodeName = context.getThisWorkerPort().toString() + "," + context.getThisTaskId();
     
     context.addTaskHook(new HookSpout());

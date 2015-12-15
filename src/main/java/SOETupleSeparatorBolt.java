@@ -21,30 +21,49 @@ import backtype.storm.topology.base.BaseRichBolt;
 import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Tuple;
 import backtype.storm.tuple.Values;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Map;
-import java.util.Random;
 
-public class SOEBolt extends BaseRichBolt {
+public class SOETupleSeparatorBolt extends BaseRichBolt {
   /**
 	 * 
 	 */
 	private static final long serialVersionUID = -7693495734028013915L;
+
+  private static final Logger LOG = LoggerFactory.getLogger(SOETupleSeparatorBolt.class);
 	
   private OutputCollector _collector;
-  private Random rand;
+  private String nodeName;
+  private long timeStamp;
   
   public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
     _collector = collector;
-    rand = new Random();
+    nodeName = context.getThisWorkerPort().toString() + "," + context.getThisTaskId();
 
-    context.addTaskHook(new HookBolt());
+    //context.addTaskHook(new HookBolt());
   }
 
   
   public void execute(Tuple tuple) {
-	if(rand.nextInt(10) < 6)
-	  _collector.emit(tuple, new Values(tuple.getString(0), tuple.getString(1), tuple.getLong(2)));
+
+    double x,y,z;
+
+    timeStamp = System.currentTimeMillis();
+    String message = tuple.getStringByField("message");
+
+    //format:
+    //0.1,0.2,0.3
+    String[] arr = message.split(",");
+
+    x = new Double(arr[0]);
+    y = new Double(arr[1]);
+    z = new Double(arr[2]);
+
+    //LOG.info("!!Message from previous : " + message);
+
+    _collector.emit(tuple, new Values(x,y,z, nodeName, timeStamp));
 
 	  _collector.ack(tuple);
   }
@@ -55,6 +74,6 @@ public class SOEBolt extends BaseRichBolt {
 
 
   public void declareOutputFields(OutputFieldsDeclarer declarer) {
-    declarer.declare(new Fields("message", "fieldValue", "timeStamp"));
+    declarer.declare(new Fields("Xvalue","Yvalue","Zvalue", "fieldValue", "timeStamp"));
   }
 }
