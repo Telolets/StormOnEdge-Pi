@@ -21,41 +21,44 @@ import backtype.storm.topology.base.BaseRichBolt;
 import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Tuple;
 import backtype.storm.tuple.Values;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
-public class SOECheckVibrationBolt extends BaseRichBolt {
+public class SOEAlertForwarderBolt extends BaseRichBolt {
   /**
 	 * 
 	 */
-	private static final long serialVersionUID = -7693495734028013915L;
-  private final String message = "Vibration Detected";
-  private double maxTolerance = 1.04;
+	private static final long serialVersionUID = -7693495013915L;
+  private static final Logger LOG = LoggerFactory.getLogger(SOEAlertForwarderBolt.class);
+  private List<Integer> alertBoltTasks;
 	
   private OutputCollector _collector;
   
   public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
     _collector = collector;
-
     //context.addTaskHook(new HookBolt());
+    alertBoltTasks = context.getComponentTasks("AlertBolt_Local");
+    LOG.info("[AlertForwarder] Ready: " + alertBoltTasks);
   }
 
   
   public void execute(Tuple tuple) {
-
-    double x = tuple.getDoubleByField("Xvalue");
-    double y = tuple.getDoubleByField("Yvalue");
-    double z = tuple.getDoubleByField("Zvalue");
-
     @SuppressWarnings("unchecked")
-    List<Integer> alertIDs = (List<Integer>) tuple.getValueByField("alertTaskIDs");
+    List<Integer> destinationTasks = (List<Integer>) tuple.getValueByField("alertTaskIDs");
+    LOG.info("[AlertForwarder] execute: " + destinationTasks);
 
-    if (x > maxTolerance || y > maxTolerance || z > maxTolerance ) {
-      _collector.emit(tuple, new Values(message,
-              tuple.getValueByField("alertTaskIDs"),
-              tuple.getValueByField("timeStamp")));
+    for(Integer taskID : destinationTasks) {
+
+      LOG.info("[AlertForwarder] Send direct grouping to " + taskID);
+
+      _collector.emitDirect(taskID, tuple,
+              new Values(tuple.getStringByField("message"),
+                      tuple.getValueByField("alertTaskIDs"),
+                      tuple.getValueByField("timeStamp")));
     }
 
     _collector.ack(tuple);

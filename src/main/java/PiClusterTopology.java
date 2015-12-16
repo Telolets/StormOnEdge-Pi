@@ -31,6 +31,10 @@ public class PiClusterTopology {
   @Option(name="--debug", aliases={"-d"}, usage="enable debug")
   private boolean _debug = false;
 
+  @Option(name="--globalAlert", aliases={"-g"},
+          usage="Do the computation in global TaskGroup. By default system will process everything locally")
+  private boolean _globalAlert = false;
+
   @Option(name="--numTopologies", aliases={"-n"}, metaVar="TOPOLOGIES",
           usage="number of topologies to run in parallel")
   private int _numTopologies = 1;
@@ -157,7 +161,6 @@ public class PiClusterTopology {
     }
     //System.out.println(namaSupervisor);
 
-    int slotsUsedDiff = totalUsedSlots - state.slotsUsed;
     state.slotsUsed = totalUsedSlots;
 
     int numTopologies = summary.get_topologies_size();
@@ -190,7 +193,7 @@ public class PiClusterTopology {
 
     state.transferred = totalTransferred;
     System.out.println(message+","+totalSlots+","+totalUsedSlots+","+totalExecutors+","+executorsWithMetrics+","+time+",NOLIMIT");
-    return !(totalUsedSlots > 0 && slotsUsedDiff == 0 && totalExecutors > 0 && executorsWithMetrics >= totalExecutors);
+    return !(totalUsedSlots > 0 && totalExecutors > 0 && executorsWithMetrics >= totalExecutors);
   }
 
   public void realMain(String[] args) throws Exception {
@@ -253,18 +256,28 @@ public class PiClusterTopology {
                 .customGrouping("RabbitMQSpoutLocal", new ZoneShuffleGrouping())
                 .addConfiguration("group-name", "Local1");
 
-        builder.setBolt("CheckVibration_local", new SOECheckVibrationBolt(), totalLocalBolt)
+        builder.setBolt("CheckVibration_Local", new SOECheckVibrationBolt(), totalLocalBolt)
                 .customGrouping("TupleSeparator", new ZoneShuffleGrouping())
                 .addConfiguration("group-name", "Local1");
-//
-        builder.setBolt("messageBoltLocal_LocalResult", new SOEFinalAlertBolt(), totalLocalResultBolt)
-                .customGrouping("CheckVibration_local", new ZoneShuffleGrouping())
-                //.shuffleGrouping("CheckVibration_global")
-                .addConfiguration("group-name", "Local1");
+
+        if(_globalAlert) {
+          builder.setBolt("AlertBolt_Local", new SOEFinalAlertBolt(), _localGroup)
+                  .directGrouping("AlertForwarder_Global")
+                  .addConfiguration("group-name", "Local1");
+        }
+        else {
+          builder.setBolt("AlertBolt_Local", new SOEFinalAlertBolt(), _localGroup)
+                  .customGrouping("CheckVibration_Local", new ZoneShuffleGrouping())
+                  .addConfiguration("group-name", "Local1");
+        }
 
         //Global1 TaskGroup
-        builder.setBolt("CheckVibration_global", new SOECheckVibrationBolt(), totalGlobalBolt)
+        builder.setBolt("CheckVibration_Global", new SOECheckVibrationBolt(), totalGlobalBolt)
                 .shuffleGrouping("TupleSeparator")
+                .addConfiguration("group-name", "Global1");
+
+        builder.setBolt("AlertForwarder_Global", new SOEAlertForwarderBolt(), 1)
+                .shuffleGrouping("CheckVibration_Global")
                 .addConfiguration("group-name", "Global1");
 
 //        builder.setBolt("messageBoltGlobal1_FG", new SOECheckVibrationBolt(), totalGlobalBolt)

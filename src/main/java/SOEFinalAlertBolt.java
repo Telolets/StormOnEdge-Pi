@@ -36,7 +36,9 @@ public class SOEFinalAlertBolt extends BaseRichBolt {
   private OutputCollector _collector;
 
   private final String PythonLOCATION = "/home/pi/SOE/stormData";
-  private final String PythonNAME = "alert.py";
+  private final String PythonFILE1 = "alert.py";
+  private final String PythonFILE2 = "reset.py";
+  private String nodeID;
 
   public SOEFinalAlertBolt() {
     //Empty
@@ -45,6 +47,7 @@ public class SOEFinalAlertBolt extends BaseRichBolt {
   
   public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
     _collector = collector;
+    nodeID = context.getThisWorkerPort().toString();
 
 //    context.addTaskHook(new HookFinalBolt());
 
@@ -56,26 +59,29 @@ public class SOEFinalAlertBolt extends BaseRichBolt {
 
   
   public void execute(Tuple tuple) {
-	  //if(rand.nextInt(10) < 6)
-	  //_collector.emit(tuple, new Values(tuple.getString(0), tuple.getString(1), tuple.getLong(2)));
 
     String message = tuple.getStringByField("message");
-    String nodeName = tuple.getStringByField("fieldValue");
     long timeStamp = tuple.getLongByField("timeStamp");
 
-    LOG.info("!!Something Happened in " + nodeName);
+
+    LOG.info("!!Something Happened in " + nodeID);
     LOG.info("!!At : " + new DateTime(timeStamp).toString());
     LOG.info("!!Current Time : " + DateTime.now());
 
     try {
-      ProcessBuilder builder = new ProcessBuilder("python", PythonNAME);
+      ProcessBuilder builder = new ProcessBuilder("python", PythonFILE1);
       builder.directory(new File(PythonLOCATION));
-
       Process process = builder.start();
-      Thread.sleep(500); //let the app run
-      process.destroy();
+//      process.waitFor();
 
-    }catch (Exception e) {e.printStackTrace();}
+//      builder = new ProcessBuilder("python", PythonFILE2);
+//      builder.directory(new File(PythonLOCATION));
+//      process = builder.start();
+//      process.waitFor();
+
+    }catch (Exception e) {
+      LOG.info("[Final Alert]\n" + e.getMessage());
+    }
 
 	  _collector.ack(tuple);
   }
@@ -86,6 +92,6 @@ public class SOEFinalAlertBolt extends BaseRichBolt {
 
 
   public void declareOutputFields(OutputFieldsDeclarer declarer) {
-    declarer.declare(new Fields("message", "fieldValue", "timeStamp"));
+    //declarer.declare(new Fields("message", "fieldValue", "timeStamp"));
   }
 }

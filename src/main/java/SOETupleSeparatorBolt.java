@@ -24,6 +24,8 @@ import backtype.storm.tuple.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public class SOETupleSeparatorBolt extends BaseRichBolt {
@@ -37,10 +39,24 @@ public class SOETupleSeparatorBolt extends BaseRichBolt {
   private OutputCollector _collector;
   private String nodeName;
   private long timeStamp;
+  private List<Integer> common;
   
   public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
     _collector = collector;
     nodeName = context.getThisWorkerPort().toString() + "," + context.getThisTaskId();
+
+    List<Integer> workerTasks = context.getThisWorkerTasks();
+    List<Integer> alertBoltTasks = context.getComponentTasks("AlertBolt_Local");
+
+    LOG.info("!!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!!");
+    LOG.info("!![Prepare] worker tasks : " + workerTasks);
+    LOG.info("!![Prepare] Alert bolt tasks : " + alertBoltTasks);
+
+    common = new ArrayList<Integer>(workerTasks);
+    common.retainAll(alertBoltTasks);
+
+    LOG.info("!![Prepare] Common Task : " + common);
+    LOG.info("!!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!!");
 
     //context.addTaskHook(new HookBolt());
   }
@@ -63,7 +79,7 @@ public class SOETupleSeparatorBolt extends BaseRichBolt {
 
     //LOG.info("!!Message from previous : " + message);
 
-    _collector.emit(tuple, new Values(x,y,z, nodeName, timeStamp));
+    _collector.emit(tuple, new Values(x,y,z, common, timeStamp));
 
 	  _collector.ack(tuple);
   }
@@ -74,6 +90,6 @@ public class SOETupleSeparatorBolt extends BaseRichBolt {
 
 
   public void declareOutputFields(OutputFieldsDeclarer declarer) {
-    declarer.declare(new Fields("Xvalue","Yvalue","Zvalue", "fieldValue", "timeStamp"));
+    declarer.declare(new Fields("Xvalue","Yvalue","Zvalue", "alertTaskIDs", "timeStamp"));
   }
 }
